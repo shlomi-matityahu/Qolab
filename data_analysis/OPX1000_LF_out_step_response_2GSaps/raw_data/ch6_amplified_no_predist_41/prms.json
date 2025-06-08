@@ -1,0 +1,12 @@
+{
+    "filepath": "./smapling_scope_data/250602/ch6_amplified_no_predist_41",
+    "channel": 1,
+    "n_points": 512,
+    "scale_us_per_div": 0.025,
+    "sample_interval_ns": null,
+    "delay_from_trigger_in_us": 9.9,
+    "scale_mV_per_div": 2,
+    "offset_mV": 785,
+    "average": 100,
+    "comment": "(OPX1k DR1 LFout6) - (SMA cable 72in) - (Sampling scope 11801C), Amplified mode, 0-+1V, without predistortion"
+}
