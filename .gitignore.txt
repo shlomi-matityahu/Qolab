@@ -1,0 +1,23 @@
+# Ignore Python virtual environments
+venv
+ENV
+env
+.venv
+
+# Ignore Python cache
+__pycache__
+.py[cod]
+.pyo
+
+# Ignore Jupyter Notebook checkpoints (if using notebooks)
+.ipynb_checkpoints
+
+# Ignore VSCode or PyCharm settings (if applicable)
+.vscode
+.idea
+
+# Ignore data files, logs, or temp files
+.log
+.tmp
+.bak
+.DS_Store
