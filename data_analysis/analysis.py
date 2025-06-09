@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 import json
-from arch_main.arch_main import *
+from .arch.poc.parallel_iir_filters.src.filters_wrapper import filters_wrapper
 
 # %% Define functions
 def single_exp_decay(t, amp, tau):
