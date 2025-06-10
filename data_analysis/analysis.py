@@ -24,16 +24,6 @@ import json
 # Import filters_wrapper from src
 from src.filters_wrapper import filters_wrapper
 
-# %% Load and prepare data
-file_path = "/home/shlomimatit/Projects/Qolab/Qolab_projects/data_analysis/OPX1000_LF_out_step_response_2GSaps/normalized_amplitude_ch6.npy"
-normalized_amplitude = np.load(file_path)
-y = normalized_amplitude[750:5000]  # Use the same data range as original plot
-t = np.arange(len(y)) * 0.5  # time in ns (0.5ns is the sampling period)
-
-# Define start fractions for each component
-# Adjust these values to control fitting ranges
-start_fractions = [0.1, 0.013, 0.005]  # Example: 5 components with different ranges
-
 # %% Define functions
 def single_exp_decay(t, amp, tau):
     """Single exponential decay without offset
@@ -48,7 +38,7 @@ def single_exp_decay(t, amp, tau):
     """
     return amp * np.exp(-t/tau)
 
-def sequential_exp_fit(t, y, start_fractions):
+def sequential_exp_fit(t, y, start_fractions, verbose=True):
     """
     Fit multiple exponentials sequentially by:
     1. First fit a constant term from the tail of the data
@@ -60,6 +50,7 @@ def sequential_exp_fit(t, y, start_fractions):
         t (array): Time points in nanoseconds
         y (array): Data points (normalized amplitude)
         start_fractions (list): List of fractions (0 to 1) indicating where to start fitting each component
+        verbose (bool): Whether to print detailed fitting information
         
     Returns:
         tuple: (components, constant, residual) where:
@@ -71,15 +62,17 @@ def sequential_exp_fit(t, y, start_fractions):
     t_offset = t - t[0]  # Make time start at 0
     
     # First, estimate the constant term from the tail of the data
-    constant = np.mean(y[-1000:])  # Use last 20 points
-    print(f"\nFitted constant term: {constant:.3e}")
+    constant = np.mean(y[-1000:])  # Use last 1000 points
+    if verbose:
+        print(f"\nFitted constant term: {constant:.3e}")
     
     y_residual = y.copy() - constant
     
     for i, start_frac in enumerate(start_fractions):
         # Calculate start index for this component
         start_idx = int(len(t) * start_frac)
-        print(f"\nFitting component {i+1} using data from t = {t[start_idx]:.1f} ns (fraction: {start_frac:.3f})")
+        if verbose:
+            print(f"\nFitting component {i+1} using data from t = {t[start_idx]:.1f} ns (fraction: {start_frac:.3f})")
         
         # Fit current component
         try:
@@ -103,44 +96,158 @@ def sequential_exp_fit(t, y, start_fractions):
             # Store the components
             amp, tau = popt
             components.append((amp, tau))
-            print(f"Found component: amplitude = {amp:.3e}, tau = {tau:.3f} ns")
+            if verbose:
+                print(f"Found component: amplitude = {amp:.3e}, tau = {tau:.3f} ns")
             
             # Subtract this component from the entire signal
             y_residual -= amp * np.exp(-t_offset/tau)
             
         except RuntimeError as e:
-            print(f"Warning: Fitting failed for component {i+1}: {e}")
+            if verbose:
+                print(f"Warning: Fitting failed for component {i+1}: {e}")
             break
     
     return components, constant, y_residual
 
-# %% Perform sequential fitting
-components, constant, residual = sequential_exp_fit(t, y, start_fractions)
-print(f"RMS residual: {np.sqrt(np.mean(residual**2)):.3e}")
+def optimize_start_fractions_filtered(t, y, base_fractions, bounds_scale=0.5):
+    """
+    Optimize the start_fractions by minimizing the RMS between filtered signal and ideal step
+    using scipy.optimize.minimize.
+    
+    Args:
+        t (array): Time points in nanoseconds
+        y (array): Data points (normalized amplitude)
+        base_fractions (list): Initial guess for start fractions
+        bounds_scale (float): Scale factor for bounds around base fractions (0.5 means ±50%)
+        
+    Returns:
+        tuple: (best_fractions, best_components, best_constant, best_rms_filtered)
+    """
+    from scipy.optimize import minimize
+    
+    def objective(x):
+        """Objective function to minimize: RMS between filtered signal and ideal step"""
+        # Ensure fractions are ordered (f1 > f2 > f3)
+        if not (x[0] > x[1] > x[2]):
+            return 1e6  # Return large value if constraint is violated
+        
+        try:
+            # Try this combination of fractions
+            components, constant, _ = sequential_exp_fit(t, y, x, verbose=False)
+            
+            # Calculate filtered signal and its RMS
+            A = [component[0] for component in components]
+            tau = [component[1]*1e-9 for component in components]
+            y_scaled = y * 0.4  # Scale the signal
+            y_filtered = filters_wrapper(y_scaled, A, tau, constant)
+            step = 0.4 * np.ones_like(y_filtered)
+            filtered_residual = step - y_filtered
+            current_rms = np.sqrt(np.mean(filtered_residual**2))
+            
+            return current_rms
+        
+        except RuntimeError:
+            return 1e6  # Return large value if fit fails
+    
+    # Define bounds for optimization
+    bounds = []
+    for base in base_fractions:
+        min_val = base * (1 - bounds_scale)
+        max_val = base * (1 + bounds_scale)
+        bounds.append((min_val, max_val))
+    
+    print("\nOptimizing start_fractions using scipy.optimize.minimize...")
+    print(f"Initial values: {[f'{f:.5f}' for f in base_fractions]}")
+    print(f"Bounds: ±{bounds_scale*100}% around initial values")
+    
+    # Run optimization
+    result = minimize(
+        objective,
+        x0=base_fractions,
+        bounds=bounds,
+        method='Nelder-Mead',  # This method works well for non-smooth functions
+        options={'disp': True, 'maxiter': 200}
+    )
+    
+    # Get final results
+    if result.success:
+        best_fractions = result.x
+        components, constant, _ = sequential_exp_fit(t, y, best_fractions, verbose=False)
+        
+        # Calculate final RMS
+        A = [component[0] for component in components]
+        tau = [component[1]*1e-9 for component in components]
+        y_scaled = y * 0.4
+        y_filtered = filters_wrapper(y_scaled, A, tau, constant)
+        step = 0.4 * np.ones_like(y_filtered)
+        filtered_residual = step - y_filtered
+        best_rms_filtered = np.sqrt(np.mean(filtered_residual**2))
+        
+        print("\nOptimization successful!")
+        print(f"Initial fractions: {[f'{f:.5f}' for f in base_fractions]}")
+        print(f"Optimized fractions: {[f'{f:.5f}' for f in best_fractions]}")
+        print(f"Final RMS filtered: {best_rms_filtered:.3e}")
+        print(f"Number of iterations: {result.nit}")
+    else:
+        print("\nOptimization failed. Using initial values.")
+        best_fractions = base_fractions
+        components, constant, _ = sequential_exp_fit(t, y, best_fractions)
+        best_rms_filtered = objective(best_fractions)
+    
+    return best_fractions, components, constant, best_rms_filtered
+
+# %% Load and prepare data
+
+if __name__ == '__main__':
+    file_path = "/home/shlomimatit/Projects/Qolab/Qolab_projects/data_analysis/OPX1000_LF_out_step_response_2GSaps/normalized_amplitude_ch6.npy"
+    normalized_amplitude = np.load(file_path)
+    y = normalized_amplitude[751:5000]  # Use the same data range as original plot
+    t = np.arange(len(y)) * 0.5  # time in ns (0.5ns is the sampling period)
+
+    # Define base start fractions and optimize them
+    base_fractions = [0.1, 0.013, 0.005]
+    best_fractions, best_components, best_constant, best_rms_filtered = optimize_start_fractions_filtered(t, y, base_fractions, bounds_scale=0)
+
+    # Use the optimized results for plotting
+    components = best_components
+    constant = best_constant
 
 # %% Plot results
 plt.figure(figsize=(12, 8))
 
+# Define a custom color palette
+colors = ['#1f77b4',  # blue
+          '#2ca02c',  # green
+          '#ff7f0e',  # orange
+          '#d62728',  # red
+          '#9467bd',  # purple
+          '#8c564b',  # brown
+          '#e377c2',  # pink
+          '#7f7f7f',  # gray
+          '#bcbd22',  # yellow-green
+          '#17becf'   # cyan
+]
+
 # Plot original data
-plt.semilogx(t, y, 'b.', label='Original Data', alpha=0.7)
+plt.semilogx(t, y, color=colors[0], marker='.', linestyle='None', label='Original Data', alpha=0.7)
 
 # Generate and plot full fit
 t_offset = t - t[0]
 y_fit = np.ones_like(t, dtype=float) * constant  # Start with fitted constant
-plt.axhline(y=constant, color='g', linestyle='--', label=f'Constant = {constant:.3e}', alpha=0.5)
+plt.axhline(y=constant, color=colors[1], linestyle='--', label=f'Constant = {constant:.3e}', alpha=0.5)
 
 for i, (amp, tau) in enumerate(components):
     # Plot individual components
     component = amp * np.exp(-t_offset/tau) + constant
-    plt.plot(t, component, '--', 
-            label=f'Component {i+1} (A = {amp:.3e}, τ = {tau:.3f} ns, start={t[int(len(t)*start_fractions[i])]:.1f} ns)', alpha=0.5)
+    plt.plot(t, component, '--', color=colors[i+2],
+            label=f'Component {i+1} (A = {amp:.3e}, τ = {tau:.3f} ns, start={t[int(len(t)*best_fractions[i])]:.1f} ns)', alpha=0.5)
     y_fit += amp * np.exp(-t_offset/tau)
 
 # Plot full fit
-plt.plot(t, y_fit, 'r-', label='Full Fit', linewidth=2)
+plt.plot(t, y_fit, color='#d62728', label='Full Fit', linewidth=2)  # Red
 
 # Plot residual
-plt.plot(t, residual + constant, 'k:', label='Residual', alpha=0.5)
+plt.plot(t, y - y_fit + best_constant, color='#7f7f7f', linestyle=':', label='Residual', alpha=0.5)
 
 plt.grid(True)
 plt.legend()
@@ -153,12 +260,12 @@ plt.ylabel('Normalized Amplitude')
 print("\nFitted Parameters:")
 print(f"Constant term: {constant:.3e}")
 for i, (amp, tau) in enumerate(components):
-    print(f"\nComponent {i+1} (start time: {t[int(len(t)*start_fractions[i])]:.1f} ns):")
+    print(f"\nComponent {i+1} (start time: {t[int(len(t)*best_fractions[i])]:.1f} ns):")
     print(f"Amplitude: {amp:.3e}")
     print(f"Time Constant: {tau:.3f} ns")
-    print(f"Start fraction: {start_fractions[i]:.5f}")
+    print(f"Start fraction: {best_fractions[i]:.5f}")
 
-print(f"\nFinal RMS residual: {np.sqrt(np.mean(residual**2)):.3e}")
+print(f"\nFinal RMS residual: {np.sqrt(np.mean((y - y_fit)**2)):.3e}")
 
 plt.title('Sequential Multi-Exponential Fit with Fitted Constant', pad=20)
 
@@ -171,8 +278,15 @@ tau = [component[1]*1e-9 for component in components]
 
 y_filtered = filters_wrapper(y, A, tau, constant)
 
-plt.plot(t, y, 'b-', label='Original Data', alpha=0.7)
-plt.plot(t, y_filtered, 'r-', label='Filtered Signal', linewidth=2)
+plt.plot(t, y, color=colors[0], label='Original Data', alpha=0.7)
+plt.plot(t, y_filtered, color=colors[3], label='Filtered Signal', linewidth=2)
+
+step = 0.4 * np.ones_like(y_filtered)
+plt.plot(t, step, color=colors[1], linestyle='-', linewidth=2, label='Ideal step')
+
+filtered_residual = step - y_filtered
+rms_filtered = np.sqrt(np.mean(filtered_residual**2))
+print(f"RMS filtered: {rms_filtered:.3e}")
 
 plt.grid(True)
 plt.legend()
