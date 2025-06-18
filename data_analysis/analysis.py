@@ -64,7 +64,14 @@ def sequential_exp_fit(t, y, start_fractions, verbose=True):
     t_offset = t - t[0]  # Make time start at 0
     
     # First, estimate the constant term from the tail of the data
-    a_dc = np.mean(y[-1000:])  # Use last 1000 points
+    # Find the flat region in the tail by looking at local variance
+    window = len(y) // 10  # Window size by dividing signal into 100 equal pieces
+    rolling_var = np.array([np.var(y[i:i+window]) for i in range(len(y)-window)])
+    # Find where variance drops below threshold, indicating flat region
+    var_threshold = np.mean(rolling_var) * 0.1  # 10% of mean variance
+    flat_start = np.where(rolling_var < var_threshold)[0][-1]
+    a_dc = np.mean(y[flat_start:])  # Use last 1000 points
+    print(f"Flat start: {flat_start}")
     if verbose:
         print(f"\nFitted constant term: {a_dc:.3e}")
     
@@ -300,9 +307,7 @@ y_filtered = filters_wrapper(y, A, tau, a_dc, cfg=cfg)
 
 step = step_factor * np.ones_like(y_filtered)
 fir = scipy.signal.deconvolve(step, y_filtered[:100])[0][0:47]
-print(fir)
 fir[-1] += 1 - np.sum(fir)
-print(fir)
 
 y_filtered2 = filters_wrapper(y, A, tau, a_dc, fir=fir, cfg=cfg)
 
