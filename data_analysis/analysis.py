@@ -27,7 +27,7 @@ from src.filters_wrapper import filters_wrapper
 from src.config.filter_cfg import FilterCfg
 
 # %% Define functions
-def single_exp_decay(t, amp, tau):
+def single_exp_decay(t: np.ndarray, amp: float, tau: float) -> np.ndarray:
     """Single exponential decay without offset
     
     Args:
@@ -40,7 +40,12 @@ def single_exp_decay(t, amp, tau):
     """
     return amp * np.exp(-t/tau)
 
-def sequential_exp_fit(t, y, start_fractions, verbose=True):
+def sequential_exp_fit(
+    t: np.ndarray, 
+    y: np.ndarray, 
+    start_fractions: list[float], 
+    verbose: bool=True
+    ) -> tuple[list[tuple[float, float]], float, np.ndarray]:
     """
     Fit multiple exponentials sequentially by:
     1. First fit a constant term from the tail of the data
@@ -207,10 +212,15 @@ def optimize_start_fractions_filtered(t, y, base_fractions, bounds_scale=0.5):
 # %% Load and prepare data
 
 if __name__ == '__main__':
-    file_path = "/home/shlomimatit/Projects/Qolab/Qolab_projects/data_analysis/OPX1000_LF_out_step_response_2GSaps/normalized_amplitude_ch6.npy"
-    normalized_amplitude = np.load(file_path)
-    y = normalized_amplitude[750:5000]  # Use the same data range as original plot
-    t = np.arange(len(y)) * 0.5  # time in ns (0.5ns is the sampling period)
+    # file_path = "/home/shlomimatit/Projects/Qolab/Qolab_projects/data_analysis/OPX1000_LF_out_step_response_2GSaps/normalized_amplitude_ch6.npy"
+    # normalized_amplitude = np.load(file_path)
+    # y = normalized_amplitude[750:5000]  # Use the same data range as original plot
+    # t = np.arange(len(y)) * 0.5  # time in ns (0.5ns is the sampling period)
+    
+    file_path1 = "/home/shlomimatit/Projects/Qolab/Qolab_projects/data_analysis/Cryoscope_data/time_1d_4144.npy"
+    file_path2 = "/home/shlomimatit/Projects/Qolab/Qolab_projects/data_analysis/Cryoscope_data/flux_ampl_4144.npy"
+    t = np.load(file_path1)
+    y = np.load(file_path2)
 
     # Define base start fractions and optimize them
     base_fractions = [0.1, 0.013, 0.005]
@@ -293,7 +303,7 @@ plt.title('Sequential Multi-Exponential Fit', pad=20)
 
 
 # %% Plot the original and filtered signal in a new figure
-step_factor = 0.4
+step_factor = 1
 
 y *= step_factor
 plt.figure(figsize=(12, 8))

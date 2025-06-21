@@ -1,0 +1,23 @@
+{
+  "include": ["."],
+  "extraPaths": [
+    "./arch/poc/parallel_iir_filters"
+  ],
+  "typeCheckingMode": "basic",
+  "reportArgumentType": false,
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none",
+  "reportMissingModuleSource": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownLambdaType": "none",
+  "reportUnknownParameterType": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportOptionalSubscript": "none",
+  "reportOptionalIterable": "none",
+  "reportOptionalContextManager": "none",
+  "reportOptionalOperand": "none",
+  "reportReturnType": "none",
+  "reportInvalidStringEscapeSequence": "none"
+}
