@@ -7,6 +7,8 @@ to experimental data using a sequential fitting approach.
 # %% Import libraries
 import os
 import sys
+import json
+from typing import Literal
 
 # Add parallel_iir_filters directory to Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -15,16 +17,20 @@ if filters_path not in sys.path:
     sys.path.append(filters_path)
 
 import numpy as np
-import scipy
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('TkAgg')  # Set the backend before importing pyplot
 from scipy.optimize import curve_fit
-import json
+from scipy.optimize import minimize
+from scipy.interpolate import interp1d
+from scipy.signal import lfilter
 
 # Import filters_wrapper from src
 from src.filters_wrapper import filters_wrapper
 from src.config.filter_cfg import FilterCfg
+
+from scipy_based_filters import get_inv_exp_sum_as_rational_filter
+
 
 # %% Define functions
 def single_exp_decay(t: np.ndarray, amp: float, tau: float) -> np.ndarray:
@@ -122,7 +128,13 @@ def sequential_exp_fit(
     
     return components, a_dc, y_residual
 
-def optimize_start_fractions_filtered(t, y, base_fractions, bounds_scale=0.5):
+def optimize_start_fractions(
+    t: np.ndarray, 
+    y: np.ndarray, 
+    base_fractions: list[float], 
+    objective_function: Literal['rms_exp_fit', 'rms_filtered'], 
+    bounds_scale: float=0.5
+    ) -> tuple[list[float], list[tuple[float, float]], float, float]:
     """
     Optimize the start_fractions by minimizing the RMS between filtered signal and ideal step
     using scipy.optimize.minimize.
@@ -136,10 +148,22 @@ def optimize_start_fractions_filtered(t, y, base_fractions, bounds_scale=0.5):
     Returns:
         tuple: (best_fractions, best_components, best_dc, best_rms_filtered)
     """
-    from scipy.optimize import minimize
     
-    def objective(x):
-        """Objective function to minimize: RMS between filtered signal and ideal step"""
+    def objective(
+        x: list[float], 
+        objective_function: Literal['rms_exp_fit', 'rms_filtered']
+        ) -> float:
+        """
+        Objective function to minimize: Either RMS between exponential fit and original data 
+        or RMS between filtered signal and ideal step
+
+        Args:
+            x (list): List of start fractions
+            objective_function (Literal): Either 'rms_exp_fit' or 'rms_filtered'
+
+        Returns:
+            float: The objective value to minimize
+        """
         # Ensure fractions are ordered (f1 > f2 > f3)
         if not (x[0] > x[1] > x[2]):
             return 1e6  # Return large value if constraint is violated
@@ -147,15 +171,25 @@ def optimize_start_fractions_filtered(t, y, base_fractions, bounds_scale=0.5):
         try:
             # Try this combination of fractions
             components, a_dc, _ = sequential_exp_fit(t, y, x, verbose=False)
-            
-            # Calculate filtered signal and its RMS
             A = [component[0] for component in components]
             tau = [component[1]*1e-9 for component in components]
-            y_scaled = y * 0.4  # Scale the signal
-            y_filtered = filters_wrapper(y_scaled, A, tau, a_dc)
-            step = 0.4 * np.ones_like(y_filtered)
-            filtered_residual = step - y_filtered
-            current_rms = np.sqrt(np.mean(filtered_residual**2))
+            
+            if objective_function == 'rms_exp_fit':
+                # Calculate RMS between exponential fit and original data
+                y_fit = np.ones_like(y, dtype=float) * a_dc  # Start with fitted constant
+                for amp, tau in components:
+                    y_fit += amp * np.exp(-t/tau)
+                exp_fit_residual = y - y_fit
+                current_rms = np.sqrt(np.mean(exp_fit_residual**2))
+            elif objective_function == 'rms_filtered':
+            # Calculate filtered signal and its RMS     
+                y_scaled = y * 0.4  # Scale the signal
+                y_filtered = filters_wrapper(y_scaled, A, tau, a_dc)
+                step = 0.4 * np.ones_like(y_filtered)
+                filtered_residual = step - y_filtered
+                current_rms = np.sqrt(np.mean(filtered_residual**2))
+            else:
+                raise ValueError(f"Invalid objective function: {objective_function}")
             
             return current_rms
         
@@ -169,13 +203,13 @@ def optimize_start_fractions_filtered(t, y, base_fractions, bounds_scale=0.5):
         max_val = base * (1 + bounds_scale)
         bounds.append((min_val, max_val))
     
-    print("\nOptimizing start_fractions using scipy.optimize.minimize...")
+    print(f"\nOptimizing start_fractions for {objective_function} using scipy.optimize.minimize...")
     print(f"Initial values: {[f'{f:.5f}' for f in base_fractions]}")
     print(f"Bounds: ±{bounds_scale*100}% around initial values")
     
     # Run optimization
     result = minimize(
-        objective,
+        lambda x: objective(x, objective_function=objective_function),
         x0=base_fractions,
         bounds=bounds,
         method='Nelder-Mead',  # This method works well for non-smooth functions
@@ -190,24 +224,24 @@ def optimize_start_fractions_filtered(t, y, base_fractions, bounds_scale=0.5):
         # Calculate final RMS
         A = [component[0] for component in components]
         tau = [component[1]*1e-9 for component in components]
-        y_scaled = y * 0.4
-        y_filtered = filters_wrapper(y_scaled, A, tau, a_dc)
-        step = 0.4 * np.ones_like(y_filtered)
-        filtered_residual = step - y_filtered
-        best_rms_filtered = np.sqrt(np.mean(filtered_residual**2))
+        best_rms_exp_fit = objective(best_fractions, objective_function='rms_exp_fit')
+        best_rms_filtered = objective(best_fractions, objective_function='rms_filtered')
         
-        print("\nOptimization successful!")
+        print(f"\nOptimization of {objective_function} successful!")
         print(f"Initial fractions: {[f'{f:.5f}' for f in base_fractions]}")
         print(f"Optimized fractions: {[f'{f:.5f}' for f in best_fractions]}")
+        print(f"Final RMS exponential fit: {best_rms_exp_fit:.3e}")
         print(f"Final RMS filtered: {best_rms_filtered:.3e}")
         print(f"Number of iterations: {result.nit}")
     else:
         print("\nOptimization failed. Using initial values.")
         best_fractions = base_fractions
         components, a_dc, _ = sequential_exp_fit(t, y, best_fractions)
-        best_rms_filtered = objective(best_fractions)
+        best_rms_exp_fit = objective(best_fractions, objective_function='rms_exp_fit')
+        best_rms_filtered = objective(best_fractions, objective_function='rms_filtered')
     
-    return best_fractions, components, a_dc, best_rms_filtered
+    return best_fractions, components, a_dc, best_rms_exp_fit, best_rms_filtered
+
 
 # %% Load and prepare data
 
@@ -216,15 +250,31 @@ if __name__ == '__main__':
     # normalized_amplitude = np.load(file_path)
     # y = normalized_amplitude[750:5000]  # Use the same data range as original plot
     # t = np.arange(len(y)) * 0.5  # time in ns (0.5ns is the sampling period)
-    
+    # base_fractions = [0.1, 0.013, 0.005]
+    # bounds_scale = 0.0
+    # objective_function = 'rms_exp_fit'
+   
     file_path1 = "/home/shlomimatit/Projects/Qolab/Qolab_projects/data_analysis/Cryoscope_data/time_1d_4144.npy"
     file_path2 = "/home/shlomimatit/Projects/Qolab/Qolab_projects/data_analysis/Cryoscope_data/flux_ampl_4144.npy"
     t = np.load(file_path1)
     y = np.load(file_path2)
+    base_fractions = [0.35, 0.2, 0.1, 0.005]
+    bounds_scale = 0.5
+    objective_function = 'rms_filtered'
+    
+    # Remove duplicates from t array while preserving order
+    unique_indices = np.unique(t, return_index=True)[1]
+    unique_indices = np.sort(unique_indices)
+    t = t[unique_indices]
+    y = y[unique_indices]
 
-    # Define base start fractions and optimize them
-    base_fractions = [0.1, 0.013, 0.005]
-    best_fractions, best_components, best_a_dc, best_rms_filtered = optimize_start_fractions_filtered(t, y, base_fractions, bounds_scale=0)
+    best_fractions, best_components, best_a_dc, best_rms_exp_fit, best_rms_filtered = optimize_start_fractions(
+        t=t, 
+        y=y, 
+        base_fractions=base_fractions, 
+        bounds_scale=bounds_scale,
+        objective_function=objective_function
+        )
 
     # Use the optimized results for plotting
     components = best_components
@@ -262,7 +312,8 @@ plt.semilogx(t, y, color=colors[0], marker='.', linestyle='None', label='Origina
 # Generate and plot full fit
 t_offset = t - t[0]
 y_fit = np.ones_like(t, dtype=float) * a_dc  # Start with fitted constant
-plt.axhline(y=a_dc, color=colors[1], linestyle='--', label=f'A$_{{\mathrm{{dc}}}}$ = {a_dc:.3e}', alpha=0.5)
+plt.axhline(y=a_dc, color=colors[1], linestyle='--', 
+label=f'A$_{{\mathrm{{dc}}}}$ = {a_dc:.3e}', alpha=0.5)
 
 for i, (amp, tau) in enumerate(components):
     # Plot individual components
@@ -297,13 +348,13 @@ for i, (amp, tau) in enumerate(components):
     print(f"Time Constant: {tau:.3f} ns")
     print(f"Start fraction: {best_fractions[i]:.5f}")
 
-print(f"\nFinal RMS residual: {np.sqrt(np.mean((y - y_fit)**2)):.3e}")
+print(f"\nFinal RMS exponential fit: {best_rms_exp_fit:.3e}")
 
 plt.title('Sequential Multi-Exponential Fit', pad=20)
 
 
 # %% Plot the original and filtered signal in a new figure
-step_factor = 1
+step_factor = 0.4
 
 y *= step_factor
 plt.figure(figsize=(12, 8))
@@ -311,23 +362,34 @@ plt.figure(figsize=(12, 8))
 A = [component[0] for component in components]
 tau = [component[1]*1e-9 for component in components]
 
+interp_func = interp1d(t, y, kind='cubic', bounds_error=False)
+t_new = np.arange(t[0], t[-1], 0.5)
+y_interp = interp_func(t_new)
+
 cfg = FilterCfg(verbose=False)
-y_filtered = filters_wrapper(y, A, tau, a_dc, cfg=cfg)
+y_filtered_1 = filters_wrapper(x=y_interp, A=A, tau=tau, A_b=a_dc, cfg=cfg)
 
-step = step_factor * np.ones_like(y_filtered)
-fir = scipy.signal.deconvolve(step, y_filtered[:100])[0][0:47]
-fir[-1] += 1 - np.sum(fir)
+step = step_factor * np.ones_like(y_filtered_1)
+# fir = scipy.signal.deconvolve(step, y_filtered[:100])[0][0:47]
+# fir[-1] += 1 - np.sum(fir)
 
-y_filtered2 = filters_wrapper(y, A, tau, a_dc, fir=fir, cfg=cfg)
+# y_filtered2 = filters_wrapper(x=y, A=A, tau=tau, A_b=a_dc, fir=fir, cfg=cfg)
 
-plt.semilogx(t, y / step_factor, color=colors[0], label='Original Data', alpha=0.7)
-plt.plot(t, y_filtered / step_factor, color=colors[3], label='Filtered Signal with IIR', linewidth=2)
-plt.plot(t, y_filtered2 / step_factor, color=colors[4], label='Filtered Signal with IIR+FIR', linewidth=2)
-plt.plot(t, step / step_factor, color=colors[1], linestyle='-', linewidth=2, label='Ideal step')
+plt.plot(t, y / step_factor, color=colors[0], marker='.', linestyle='None', label='Original Data', alpha=0.7)
+plt.semilogx(t_new, y_interp / step_factor, color=colors[0], linestyle='--', label='Interpolated Data', alpha=0.7)
+plt.plot(t_new, y_filtered_1 / step_factor, color=colors[3], label='Filtered Signal with IIR', linewidth=2)
 
-filtered_residual = step - y_filtered
-rms_filtered = np.sqrt(np.mean(filtered_residual**2))
-print(f"RMS filtered: {rms_filtered:.3e}")
+# plt.plot(t, y_filtered2 / step_factor, color=colors[4], label='Filtered Signal with IIR+FIR', linewidth=2)
+plt.plot(t_new, step / step_factor, color=colors[1], linestyle='-', linewidth=2, label='Ideal step')
+
+Ts = 0.5e-9
+b, a = get_inv_exp_sum_as_rational_filter(A=A, tau=tau, A_dc=a_dc, Ts=Ts)
+# x = a_dc + sum([amp * np.exp(-(t_new-t_new[0]) / tau) for amp, tau in components])
+y_filtered_2 = lfilter(b, a, y_interp) / step_factor
+# plt.plot(t_new, y_filtered_2, color=colors[2], label='Filtered Signal with scipy lfilter', linewidth=2)
+# plt.xlim([t_new[0], 1e5])
+# plt.ylim([0.95, 1.05])
+print(f"Final RMS filtered signal: {best_rms_filtered:.3e}")
 
 plt.grid(True)
 plt.legend()

@@ -1,6 +1,16 @@
 import numpy as np
 from numpy.polynomial import Polynomial as P
 from functools import reduce
+import os
+import sys
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+filters_path = os.path.join(project_root, 'arch', 'poc', 'parallel_iir_filters')
+if filters_path not in sys.path:
+    sys.path.append(filters_path)
+
+from src.filters_wrapper import filters_wrapper
+from src.config.filter_cfg import FilterCfg
 
 def get_inv_exp_sum_as_rational_filter(A: np.ndarray, tau: np.ndarray, A_dc: float, Ts: float=0.5) -> \
         tuple[np.ndarray, np.ndarray]:
@@ -62,8 +72,14 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
     # # Example usage
-    A = np.array([1.0, 0.5])
-    tau = np.array([50, 2000])
+    A = [np.float64(0.002574310165356726),
+        np.float64(-0.002556892765239572),
+ np.float64(0.001593735277595851),
+ np.float64(0.0012087418959507998)] #np.array([1.0, 0.5])
+    tau = [np.float64(18521.604589010905),
+ np.float64(12081.52795202227),
+ np.float64(3308.943257264784),
+ np.float64(106.19481905288188)] #np.array([50, 2000])
     A_dc = 1.0
     Ts = 0.5
 
@@ -71,12 +87,15 @@ if __name__ == '__main__':
 
     print(f"b: {b.tolist()}\na: {a.tolist()}")
 
-    t = np.arange(1e4)*Ts + Ts/2
+    t = np.arange(1e6)*Ts + Ts/2
     x = A_dc + sum([A_i * np.exp(-t / tau_i) for A_i, tau_i in zip(A, tau)])
     y = lfilter(b, a, x)
+
+    y_filtered = filters_wrapper(x=x * 0.4, A=A, tau=[tau_i*1e-9 for tau_i in tau], A_b=A_dc)
 
     plt.figure(figsize=(12, 8))
     plt.semilogx(t, x, label='Original signal', color='k')
     plt.semilogx(t, y, label='Filtered signal', color='r')
+    plt.semilogx(t, y_filtered / 0.4, label='Filtered signal with filters_wrapper', color='b')
     plt.legend()
     plt.show()
